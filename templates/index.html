@@ -1,0 +1,20 @@
+<!-- templates/index.html -->
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+    <meta charset="UTF-8">
+    <title>能資公司查詢系統</title>
+</head>
+<body>
+    <h2>請輸入您的問題：</h2>
+    <form method="post" action="/ask">
+        <input type="text" name="query" style="width: 60%;">
+        <button type="submit">查詢</button>
+    </form>
+
+    {% if question %}
+        <h3>您的問題：{{ question }}</h3>
+        <p><strong>回答：</strong>{{ answer }}</p>
+    {% endif %}
+</body>
+</html>
