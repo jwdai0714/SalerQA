@@ -7,7 +7,7 @@ from pdf2image import convert_from_path
 import pytesseract
 
 app = Flask(__name__)
-PASSWORD = "abc123"
+PASSWORD = "ERISaler123Abc"
 
 def grab_section(text, start_no, start_title, next_no=None, next_title=None):
     """
