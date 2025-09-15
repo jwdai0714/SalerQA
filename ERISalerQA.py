@@ -331,7 +331,6 @@ def _debug_pages():
             lengths.append(f"page {i}: len={len(t)}")
     return "<br>".join(lengths)
 
-if __name__ == "__main__":
 from flask import Flask, render_template, request
 from pypdf import PdfReader
 import re
