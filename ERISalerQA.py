@@ -3,6 +3,8 @@ import re, os
 import pdfplumber
 from pdf2image import convert_from_path
 import pytesseract
+from flask import Flask
+from pathlib import Path
 
 app = Flask(__name__)
 PASSWORD = "ERISaler123Abc"
@@ -57,7 +59,7 @@ def _ocr_page(pdf_path: str, page_index: int) -> str:
         return ""
     return pytesseract.image_to_string(imgs[0], lang='chi_tra+eng') or ""
 
-def load_pdf_text(pdf_path: str) -> str:
+def load_pdf_text(pdf_path: Path) -> str:
     print(">>> load_pdf_text: FORCE OCR from section 12 onwards")
     # 1) 先用 pdfplumber 抽字
     pages = []
@@ -93,6 +95,9 @@ def load_pdf_text(pdf_path: str) -> str:
     print(">>> load_pdf_text: DONE, length =", len(text))
     return text
 
+PDF_PATH = Path(app.root_path) / "EnergyResource3.pdf"
+pdf_text = load_pdf_text(PDF_PATH)
+print("len(pdf_text) =", len(pdf_text))
 CN2AR = {"十二":"12","十三":"13","十四":"14","十五":"15","十六":"16","十七":"17","十八":"18","十九":"19"}
 
 def _section_regex(no_cn: str, title_kw: str) -> str:
@@ -120,10 +125,7 @@ def extract_sentences(text, kw):
             seen.add(h); out.append(h)
     return out
 
-PDF_PATH = r"C:\Users\admin1\PycharmProjects\SalerQA\EnergyResource3.pdf"
-pdf_text = load_pdf_text(PDF_PATH)
 
-print("len(pdf_text) =", len(pdf_text))
 for k in ["十二","腳架設計考量","十三","現場拍攝問題","十四","行李箱","十五","DR","十六","影像判讀","十九","充電"]:
     print(k, "→", ("YES" if k in pdf_text else "NO"))
 
