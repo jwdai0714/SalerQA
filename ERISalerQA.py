@@ -1,9 +1,13 @@
-# -*- coding: utf-8 -*-
 from flask import Flask, render_template, request
 from pypdf import PdfReader
 import re
+import re, os
+import pdfplumber
+from pdf2image import convert_from_path
+import pytesseract
 
 app = Flask(__name__)
+PASSWORD = "abc123"
 
 def grab_section(text, start_no, start_title, next_no=None, next_title=None):
     """
@@ -18,22 +22,115 @@ def grab_section(text, start_no, start_title, next_no=None, next_title=None):
     m = re.search(pat, text)
     return m.group(1).strip() if m else None
 
-# 載入 PDF 並轉成文字
-def load_pdf_text(pdf_path):
-    reader = PdfReader(pdf_path)
-    text = "\n".join([page.extract_text() for page in reader.pages if page.extract_text()])
-    # 修正：中間是兩個中文字，卻有空格
+import os, re
+import pdfplumber
+from pdf2image import convert_from_path
+import pytesseract
+
+# ======= Windows：請填入你實際的路徑 =======
+TESS_PATH   = r"C:\Program Files\Tesseract-OCR\tesseract.exe"          # tesseract.exe
+POPLER_BIN  = r"C:\Program Files\poppler-24.08.0\Library\bin"          # 有 bin 的資料夾
+# ===========================================
+
+if os.path.exists(TESS_PATH):
+    pytesseract.pytesseract.tesseract_cmd = TESS_PATH
+
+def to_halfwidth(s: str) -> str:
+    out=[]
+    for ch in s:
+        o=ord(ch)
+        if o==0x3000: o=32
+        elif 0xFF01<=o<=0xFF5E: o-=0xFEE0
+        out.append(chr(o))
+    return "".join(out)
+
+def _normalize(text: str) -> str:
+    text = to_halfwidth(text)
+    text = re.sub(r'(?<=[A-Za-z0-9])\s+(?=[A-Za-z0-9])', '', text)  # 1 4 / D R → 14 / DR
     text = re.sub(r'(?<=[\u4e00-\u9fff])\s+(?=[\u4e00-\u9fff])', '', text)
-    # 修正：中文字與中文標點之間的空格
     text = re.sub(r'(?<=[\u4e00-\u9fff])\s+(?=[，。！？、；：「」])', '', text)
-    # 修正：標點符號或括號之後不該換行的地方換行了
     text = re.sub(r'([,、）)])\n(?=\w)', r'\1 ', text)
-    # 可選：將多個連續換行縮減為一行
     text = re.sub(r'\n{2,}', '\n', text)
     return text
 
+def _ocr_page(pdf_path: str, page_index: int) -> str:
+    imgs = convert_from_path(
+        pdf_path, dpi=300, first_page=page_index+1, last_page=page_index+1,
+        poppler_path=POPLER_BIN if os.path.exists(POPLER_BIN) else None
+    )
+    if not imgs:
+        return ""
+    return pytesseract.image_to_string(imgs[0], lang='chi_tra+eng') or ""
 
-pdf_text = load_pdf_text("EnergyResource3.pdf")
+def load_pdf_text(pdf_path: str) -> str:
+    print(">>> load_pdf_text: FORCE OCR from section 12 onwards")
+    # 1) 先用 pdfplumber 抽字
+    pages = []
+    with pdfplumber.open(pdf_path) as pdf:
+        for p in pdf.pages:
+            pages.append(p.extract_text() or "")
+    print(f">>> pdfplumber pages: {len(pages)}")
+
+    # 2) 找「十二」的頁碼，若找不到就從第 1 頁開始
+    start_idx = None
+    for i, t in enumerate(pages):
+        if "十二" in (t or ""):
+            start_idx = i
+            break
+    if start_idx is None:
+        start_idx = 0
+    print(f">>> force OCR from page index: {start_idx} to {len(pages)-1}")
+
+    # 3) 強制 OCR：從 start_idx 到最後一頁全部 OCR，若 OCR 文字比原文長就覆蓋
+    for i in range(start_idx, len(pages)):
+        try:
+            ocr_txt = _ocr_page(pdf_path, i)
+            if len(ocr_txt.strip()) > len((pages[i] or "").strip()):
+                pages[i] = ocr_txt
+                print(f">>> OCR replaced page {i} (len={len(ocr_txt)})")
+            else:
+                print(f">>> OCR shorter/empty page {i} (keep original)")
+        except Exception as e:
+            print(f">>> OCR fail page {i}: {e}")
+
+    text = "\n".join(pages)
+    text = _normalize(text)
+    print(">>> load_pdf_text: DONE, length =", len(text))
+    return text
+
+CN2AR = {"十二":"12","十三":"13","十四":"14","十五":"15","十六":"16","十七":"17","十八":"18","十九":"19"}
+
+def _section_regex(no_cn: str, title_kw: str) -> str:
+    no_ar = CN2AR.get(no_cn, no_cn)              # 十二 -> 12
+    title_kw = re.escape(title_kw)
+    return rf"(?:第\s*)?(?:{no_cn}|{no_ar})[、\.\s]*{title_kw}\S{{0,12}}"
+
+def grab_section(text, start_no, start_title, next_no=None, next_title=None):
+    start_pat = _section_regex(start_no, start_title)
+    if next_no and next_title:
+        end_pat = _section_regex(next_no, next_title)
+        pat = rf"{start_pat}\s*([\s\S]+?){end_pat}"
+    else:
+        pat = rf"{start_pat}\s*([\s\S]+)$"
+    m = re.search(pat, text, flags=re.IGNORECASE | re.DOTALL)
+    return m.group(1).strip() if m else None
+
+def extract_sentences(text, kw):
+    pat = rf"[^\n。]*{re.escape(kw)}[^\n。]*[。]?"
+    hits = re.findall(pat, text, flags=re.IGNORECASE)
+    seen, out = set(), []
+    for h in hits:
+        h = h.strip()
+        if h and h not in seen:
+            seen.add(h); out.append(h)
+    return out
+
+PDF_PATH = r"C:\Users\admin1\PycharmProjects\SalerQA\EnergyResource3.pdf"
+pdf_text = load_pdf_text(PDF_PATH)
+
+print("len(pdf_text) =", len(pdf_text))
+for k in ["十二","腳架設計考量","十三","現場拍攝問題","十四","行李箱","十五","DR","十六","影像判讀","十九","充電"]:
+    print(k, "→", ("YES" if k in pdf_text else "NO"))
 
 # 問答邏輯
 def answer_question(text, query):
@@ -108,51 +205,131 @@ def answer_question(text, query):
     # 12. 腳架設計考量
     elif any(k in query for k in ["腳架", "腳架設計", "腳架晃", "床很軟", "放不進去"]):
         sec = grab_section(text, "十二", "腳架設計考量", "十三", "現場拍攝問題")
-        return "腳架設計考量：\n" + sec if sec else "❌ 找不到「腳架設計考量」。"
+        if sec:
+            return "腳架設計考量：\n" + sec
+        hits = re.findall(r"[^\n。]*腳架[^\n。]*[。]?", text, flags=re.IGNORECASE)
+        hits = [h.strip() for h in dict.fromkeys(hits) if h.strip()]
+        return ("腳架設計考量（關鍵字擷取）：\n" + "\n".join(hits)) if hits else "❌ 找不到「腳架設計考量」。"
+
     # 13. 現場拍攝問題
     elif any(k in query for k in ["現場拍攝", "無法成像", "成像", "誰可以操作", "核安會", "在宅急症", "拍攝間隔"]):
         sec = grab_section(text, "十三", "現場拍攝問題", "十四", "行李箱")
-        return "現場拍攝問題：\n" + sec if sec else "❌ 找不到「現場拍攝問題」。"
+        if sec:
+            return "現場拍攝問題：\n" + sec
+        hits = re.findall(r"[^\n。]*現場拍攝[^\n。]*[。]?", text, flags=re.IGNORECASE)
+        hits = [h.strip() for h in dict.fromkeys(hits) if h.strip()]
+        return ("現場拍攝問題（關鍵字擷取）：\n" + "\n".join(hits)) if hits else "❌ 找不到「現場拍攝問題」。"
+
     # 14. 行李箱
     elif "行李箱" in query:
         sec = grab_section(text, "十四", "行李箱", "十五", "DR")
-        return "行李箱：\n" + sec if sec else "❌ 找不到「行李箱」。"
-    # 15. DR
-    elif any(k in query for k in ["DR", "防水", "防塵", "耐重", "DR軟體", "DR板", "不帶電腦", "其他品牌"]):
-        sec = grab_section(text, "十五", "DR", "十六", "影像判讀")
-        return "DR：\n" + sec if sec else "❌ 找不到「DR」。"
+        if sec:
+            return "行李箱：\n" + sec
+        hits = re.findall(r"[^\n。]*行李箱[^\n。]*[。]?", text, flags=re.IGNORECASE)
+        hits = [h.strip() for h in dict.fromkeys(hits) if h.strip()]
+        return ("行李箱（關鍵字擷取）：\n" + "\n".join(hits)) if hits else "❌ 找不到「行李箱」。"
+
+    # 15. DR（只處理 DR，本分支不含防塵/防水）
+    elif any(k in query.upper() for k in ["DR", "DR軟體", "DR板", "DR 系統"]):
+        sec = grab_section(text, "十五", "DR", "十六", "影像判讀")  # ← 注意終點是十六
+        if sec:
+            return "DR：\n" + sec
+        hits = re.findall(r"[^\n。]*DR[^\n。]*[。]?", text, flags=re.IGNORECASE)
+        hits = [h.strip() for h in dict.fromkeys(hits) if h.strip()]
+        return ("DR（關鍵字擷取）：\n" + "\n".join(hits)) if hits else "❌ 找不到「DR」。"
+
+    # 規格屬性（防塵/防水/耐重/IP…）——與 DR 分開
+    elif any(k in query for k in ["防塵", "防水", "耐重", "ip", "耐撞", "跌落", "承重"]):
+        spec = re.search(r"五[、.\s]*產品規格與特徵\s*([\s\S]+?)六[、.\s]*應用場景", text, flags=re.DOTALL)
+        for kw in ["防塵", "防水", "耐重", "ip", "耐撞", "跌落", "承重"]:
+            if kw in query:
+                target_kw = kw;
+                break
+        if spec:
+            hits = re.findall(rf"[^\n。]*{re.escape(target_kw)}[^\n。]*[。]?", spec.group(1), flags=re.IGNORECASE)
+            hits = [h.strip() for h in dict.fromkeys(hits) if h.strip()]
+            if hits:
+                label = target_kw.upper() if target_kw == "ip" else target_kw
+                return f"產品規格（{label}）：\n" + "\n".join(hits)
+        # 章節找不到就全文件補搜
+        hits = re.findall(rf"[^\n。]*{re.escape(target_kw)}[^\n。]*[。]?", text, flags=re.IGNORECASE)
+        hits = [h.strip() for h in dict.fromkeys(hits) if h.strip()]
+        label = target_kw.upper() if target_kw == "ip" else target_kw
+        return (f"相關敘述（{label}）：\n" + "\n".join(hits)) if hits else f"❌ 找不到與「{label}」相關的敘述。"
+
     # 16. 影像判讀
-    elif any(k in query for k in ["影像判讀", "即時判讀", "GPU", "顯卡"]):
+    elif any(k in query for k in ["影像判讀", "即時判讀", "gpu", "顯卡"]):
         sec = grab_section(text, "十六", "影像判讀", "十七", "陸方原料")
-        return "影像判讀：\n" + sec if sec else "❌ 找不到「影像判讀」。"
+        if sec:
+            return "影像判讀：\n" + sec
+        hits = re.findall(r"[^\n。]*影像判讀[^\n。]*[。]?", text, flags=re.IGNORECASE)
+        hits = [h.strip() for h in dict.fromkeys(hits) if h.strip()]
+        return ("影像判讀（關鍵字擷取）：\n" + "\n".join(hits)) if hits else "❌ 找不到「影像判讀」。"
+
     # 17. 陸方原料
     elif any(k in query for k in ["陸方原料", "材料來源", "球管", "大陸製"]):
         sec = grab_section(text, "十七", "陸方原料", "十八", "保固問題")
-        return "陸方原料：\n" + sec if sec else "❌ 找不到「陸方原料」。"
+        if sec:
+            return "陸方原料：\n" + sec
+        hits = re.findall(r"[^\n。]*陸方原料[^\n。]*[。]?", text, flags=re.IGNORECASE)
+        hits = [h.strip() for h in dict.fromkeys(hits) if h.strip()]
+        return ("陸方原料（關鍵字擷取）：\n" + "\n".join(hits)) if hits else "❌ 找不到「陸方原料」。"
+
     # 18. 保固問題
     elif any(k in query for k in ["保固", "保養", "多久保養", "維修"]):
         sec = grab_section(text, "十八", "保固問題", "十九", "充電")
-        return "保固問題：\n" + sec if sec else "❌ 找不到「保固問題」。"
-    # 19. 充電（最後一節，沒有下一節標題）
+        if sec:
+            return "保固問題：\n" + sec
+        hits = re.findall(r"[^\n。]*保固[^\n。]*[。]?", text, flags=re.IGNORECASE)
+        hits = [h.strip() for h in dict.fromkeys(hits) if h.strip()]
+        return ("保固問題（關鍵字擷取）：\n" + "\n".join(hits)) if hits else "❌ 找不到「保固問題」。"
+
+    # 19. 充電（最後一節）
     elif any(k in query for k in ["充電", "續航", "拍幾張", "電池", "電量"]):
-        sec = grab_section(text, "十九", "充電")  # 沒有 next_no / next_title，抓到文末
-        return "充電：\n" + sec if sec else "❌ 找不到「充電」。"
+        sec = grab_section(text, "十九", "充電")
+        if sec:
+            return "充電：\n" + sec
+        hits = re.findall(r"[^\n。]*充電[^\n。]*[。]?", text, flags=re.IGNORECASE)
+        hits = [h.strip() for h in dict.fromkeys(hits) if h.strip()]
+        return ("充電（關鍵字擷取）：\n" + "\n".join(hits)) if hits else "❌ 找不到「充電」。"
+
+
     elif "價格" in query or "價錢" in query or "費用" in query or "報價" in query:
         return "❓ 此問題請洽業務人員：E-mail:sales@roentxen.com, TEL: 03-6585156 #104 張副總"
     else:
         return "❓ 此問題無法處理，請明確描述問題內容。"
 
-# 首頁
-@app.route("/", methods=["GET"])
-def index():
-    return render_template("index.html")
 
-# 查詢處理
+# === 登入頁面 ===
+@app.route("/", methods=["GET", "POST"])
+def login_and_qa():
+    if request.method == "POST":
+        password = request.form.get("password")
+        if password == PASSWORD:
+            # 密碼正確 → 直接顯示 Q&A 頁面
+            query = request.form.get("query")
+            if query:  # 使用者已經輸入問題
+                answer = answer_question(pdf_text, query)
+                return render_template("index.html", question=query, answer=answer)
+            return render_template("index.html")  # 顯示 Q&A 表單
+        else:
+            return render_template("login.html", error="❌ 密碼錯誤")
+    return render_template("login.html")  # 初始畫面顯示登入
+
 @app.route("/ask", methods=["POST"])
 def ask():
     query = request.form["query"]
     answer = answer_question(pdf_text, query)
     return render_template("index.html", question=query, answer=answer)
+
+@app.route("/_debug_pages")
+def _debug_pages():
+    lengths = []
+    with pdfplumber.open(PDF_PATH) as pdf:
+        for i, p in enumerate(pdf.pages):
+            t = p.extract_text() or ""
+            lengths.append(f"page {i}: len={len(t)}")
+    return "<br>".join(lengths)
 
 if __name__ == "__main__":
     app.run(debug=True)
