@@ -18,3 +18,8 @@ pdfplumber==0.11.4   # 你有用 pdfplumber 讀 PDF，就要加上
 # 生產環境用的 WSGI server
 gunicorn==21.2.0
 
+pdf2image==1.17.0
+Pillow>=10.0.0
+# 若你有用 OCR：
+pytesseract==0.3.10
+

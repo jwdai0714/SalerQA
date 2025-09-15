@@ -1,0 +1,3 @@
+poppler-utils
+# 若你有用 OCR：
+tesseract-ocr
