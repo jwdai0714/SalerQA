@@ -1,12 +1,20 @@
+# Flask 基本環境
+Flask==3.0.3
+Werkzeug==3.0.6
+Jinja2==3.1.6
+itsdangerous==2.2.0
+MarkupSafe==2.1.5
 blinker==1.8.2
 click==8.1.8
 colorama==0.4.6
-Flask==3.0.3
 importlib_metadata==8.5.0
-itsdangerous==2.2.0
-Jinja2==3.1.6
-MarkupSafe==2.1.5
-pypdf==5.9.0
 typing_extensions==4.13.2
-Werkzeug==3.0.6
 zipp==3.20.2
+
+# PDF 相關
+pypdf==5.9.0
+pdfplumber==0.11.4   # 你有用 pdfplumber 讀 PDF，就要加上
+
+# 生產環境用的 WSGI server
+gunicorn==21.2.0
+
